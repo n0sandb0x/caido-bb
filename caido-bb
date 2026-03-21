@@ -10,7 +10,7 @@ OUTPUT_FILE=""
 INSTRUCTION=""
 TARGETS=()
 CAIDO_PROXY="http://127.0.0.1:8080"
-HEADLESS=false
+HEADED=false
 
 # Colors
 RED='\033[0;31m'
@@ -33,7 +33,7 @@ ${BOLD}Options:${NC}
   --instruction-file <file>  Read instructions from file
   -o, --output <file>        Output report file (default: auto-generated)
   --caido-proxy <url>        Caido proxy URL (default: http://127.0.0.1:8080)
-  --headless                 Run browser in headless mode (for VMs without display)
+  --headed                   Run browser with visible UI (default: headless)
   -h, --help                 Show this help
 
 ${BOLD}Examples:${NC}
@@ -42,7 +42,7 @@ ${BOLD}Examples:${NC}
 
   caido-bb -t https://api.example.com --instruction-file instructions.txt
 
-  caido-bb -t https://app.example.com --headless --caido-proxy http://127.0.0.1:8080
+  caido-bb -t https://app.example.com --headed  # show browser UI (needs display)
 EOF
     exit 0
 }
@@ -78,8 +78,8 @@ while [[ $# -gt 0 ]]; do
             CAIDO_PROXY="$2"
             shift 2
             ;;
-        --headless)
-            HEADLESS=true
+        --headed)
+            HEADED=true
             shift
             ;;
         -h|--help)
@@ -114,6 +114,24 @@ if ! command -v npx &>/dev/null; then
     exit 1
 fi
 
+# Check Playwright browser availability
+echo -e "${YELLOW}Checking Playwright browser...${NC}"
+if npx @playwright/mcp@latest --help &>/dev/null; then
+    # Try to verify chromium is installed
+    if command -v playwright &>/dev/null; then
+        if ! playwright install --dry-run chromium &>/dev/null 2>&1; then
+            echo -e "${YELLOW}Installing Playwright Chromium browser...${NC}"
+            npx playwright install chromium --with-deps 2>/dev/null || \
+            npx playwright install chromium 2>/dev/null || \
+            echo -e "${YELLOW}Warning: Could not auto-install Chromium. Playwright MCP will attempt to use system browser.${NC}"
+        fi
+    fi
+    echo -e "${GREEN}Playwright MCP ready.${NC}"
+else
+    echo -e "${YELLOW}Downloading Playwright MCP server...${NC}"
+    npx @playwright/mcp@latest --help &>/dev/null || true
+fi
+
 # Set default output file
 if [[ -z "$OUTPUT_FILE" ]]; then
     TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -140,7 +158,7 @@ PLAYWRIGHT_ARGS=("@playwright/mcp@latest"
     "--caps" "vision"
 )
 
-if [[ "$HEADLESS" == "true" ]]; then
+if [[ "$HEADED" != "true" ]]; then
     PLAYWRIGHT_ARGS+=("--headless")
 fi
 
@@ -396,7 +414,7 @@ done
 echo -e "  ${BOLD}Scan Mode:${NC}  ${SCAN_MODE}"
 echo -e "  ${BOLD}Report:${NC}     ${OUTPUT_FILE}"
 echo -e "  ${BOLD}Proxy:${NC}      ${CAIDO_PROXY}"
-echo -e "  ${BOLD}Browser:${NC}    Playwright MCP → Caido$([ "$HEADLESS" == "true" ] && echo " (headless)")"
+echo -e "  ${BOLD}Browser:${NC}    Playwright MCP → Caido$([ "$HEADED" == "true" ] && echo " (headed)" || echo " (headless)")"
 echo -e "  ${BOLD}Custom:${NC}     $([ -n "$INSTRUCTION" ] && echo "Yes" || echo "No")"
 echo -e "  ${BOLD}Engine:${NC}     PAI + Caido + Playwright MCP"
 echo ""
