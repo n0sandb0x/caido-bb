@@ -335,24 +335,125 @@ Available browser tools (call these as MCP tools):
 WORKFLOW — Always screenshot after navigation and key actions to see page state.
 
 CAIDO PROXY (/caido-mode skill):
-All browser traffic is automatically captured by Caido. Use these to analyze and manipulate:
-- search: Query HTTP history with HTTPQL (e.g., search 'req.host cont \"target.com\"')
-- get <id>: View full request/response with raw HTTP
-- edit <id>: Modify and resend requests (change params, headers, body, method)
-- replay <id>: Resend a captured request as-is
-- send-raw: Send completely custom HTTP requests
-- create-finding <id>: Document a vulnerability linked to the request
-- findings: List all documented findings
-- scopes: Manage testing scope
-- intercept-enable/disable: Control request interception
-- create-automate-session / fuzz: Automated fuzzing via Caido
-- export-curl <id>: Convert request to curl command
+All browser traffic is automatically captured by Caido. Use these EXTENSIVELY.
 
-TESTING WORKFLOW:
-1. Use browser tools to navigate and interact (traffic captured by Caido automatically)
-2. Use /caido-mode search to find interesting requests in Caido's history
-3. Use /caido-mode edit to modify parameters (IDs, roles, tokens) and replay
-4. Use /caido-mode create-finding to document confirmed vulnerabilities
+SETUP (run at start of every assessment):
+- /caido-mode health                    — Verify Caido is running
+- /caido-mode auth-status               — Verify PAT auth is valid
+- /caido-mode create-scope \"Target\"     — Set scope: --allow \"*.target.com\" --deny \"*.cdn.target.com\"
+
+HTTP HISTORY & SEARCH:
+- search '<HTTPQL>'                     — Query history (e.g., 'req.host cont \"target.com\" AND resp.code eq 200')
+- search '<HTTPQL>' --limit 5 --compact — Quick overview without full raw HTTP
+- recent --limit 10                     — Last 10 requests
+- get <id>                              — Full request/response with raw HTTP
+- get <id> --headers-only               — Just headers (faster for large responses)
+- get-response <id>                     — Response body only
+- export-curl <id>                      — Convert to curl for manual testing
+
+HTTPQL QUERY EXAMPLES (use these for targeted searches):
+- 'req.host cont \"api.target.com\" AND req.method eq \"POST\"'     — All POST to API
+- 'req.path cont \"/user\" AND resp.code lt 400'                    — Successful user endpoints
+- 'resp.raw cont \"admin\" OR resp.raw cont \"role\"'               — Responses mentioning roles
+- 'req.raw cont \"Bearer\" AND req.method eq \"GET\"'               — Authenticated GET requests
+- 'source:\"replay\"'                                               — Only replayed requests
+
+EDIT & REPLAY (your PRIMARY tool for IDOR/auth testing):
+- edit <id> --path /api/users/VICTIM_ID                 — Change path parameter
+- edit <id> --set-header \"Authorization: Bearer OTHER\"  — Swap auth token
+- edit <id> --body '{\"role\":\"admin\"}'                  — Modify request body
+- edit <id> --method PUT                                 — Change HTTP method
+- edit <id> --replace 'old_id=new_id'                   — Find/replace in request
+- replay <id>                                            — Resend request as-is
+- send-raw --host target.com --port 443 --tls --raw '...'  — Fully custom request
+
+REPLAY SESSIONS & COLLECTIONS (organize test cases for operator review):
+After finding an interesting request, ALWAYS create a replay session so the operator
+can review and re-execute it in Caido's UI:
+- create-session <id>                   — Create replay session from request
+- rename-session <session-id> \"IDOR user-profile\"  — Name it descriptively
+- replay-sessions                        — List all sessions
+- create-collection \"BOLA Findings\"     — Group related sessions
+- rename-collection <id> \"Phase 1 Auth\" — Organize by test phase
+
+NAMING CONVENTION for sessions:
+- \"idor-<endpoint>-<what>\"   e.g., \"idor-user-profile-horizontal\"
+- \"privesc-<endpoint>\"       e.g., \"privesc-admin-dashboard\"
+- \"bac-<endpoint>\"           e.g., \"bac-delete-other-user\"
+- \"sqli-<endpoint>\"          e.g., \"sqli-search-param\"
+
+ENVIRONMENTS (store variables per-account for IDOR testing):
+- create-env \"Account A\"                           — Create environment for first account
+- env-set <env-id> session_token \"abc123\"           — Store session token
+- env-set <env-id> user_id \"12345\"                  — Store user ID
+- env-set <env-id> location_id \"loc_789\"            — Store resource IDs
+- select-env <env-id>                                — Activate environment
+- create-env \"Account B\"                           — Second account environment
+- env-set <env-id> session_token \"xyz789\"           — Store different token
+
+Use environments to quickly swap between account contexts when testing IDOR.
+
+FILTER PRESETS (save searches for reuse):
+- create-filter \"API Errors\" --query 'req.host cont \"api\" AND resp.code gte 400'
+- create-filter \"Auth Endpoints\" --query 'req.path cont \"auth\" OR req.path cont \"login\"'
+- create-filter \"Sensitive Data\" --query 'resp.raw cont \"password\" OR resp.raw cont \"token\"'
+- filters                               — List saved filters
+- search 'preset:\"API Errors\"'         — Reuse saved filter
+
+SCOPE MANAGEMENT:
+- create-scope \"In Scope\" --allow \"*.target.com,api.target.com\" --deny \"*.analytics.com\"
+- scopes                                — List current scopes
+- update-scope <id>                     — Modify scope dynamically
+
+INTERCEPT CONTROL:
+- intercept-status                      — Check current state before operations
+- intercept-enable                      — Enable during manual testing / sensitive ops
+- intercept-disable                     — Disable during automated fuzzing / crawling
+Strategy: Keep disabled during browser navigation. Enable when you need to
+modify requests in-flight for specific test cases.
+
+AUTOMATE & FUZZ (Caido's built-in fuzzer):
+- create-automate-session <id>          — Create fuzzing session from a request
+- fuzz <session-id>                     — Start the fuzzing run
+- tasks                                 — Monitor running fuzz tasks
+- cancel-task <id>                      — Stop a running fuzz
+
+FINDINGS (document vulnerabilities WITH deduplication):
+- create-finding <request-id> --title \"IDOR on /api/users\" --description \"User A can access User B's profile\" --dedupe-key \"idor-user-profile\" --reporter \"caido-bb\"
+- update-finding <id> --description \"Additional evidence: ...\"  — Add evidence
+- findings --limit 20                    — Review all findings
+- get-finding <id>                       — Full finding details
+
+ALWAYS use --dedupe-key to prevent duplicate findings for the same issue.
+ALWAYS use --reporter \"caido-bb\" to identify automated findings.
+
+═══════════════════════════════════════════════════════════════
+TESTING WORKFLOW (follow this pattern for EVERY endpoint)
+═══════════════════════════════════════════════════════════════
+
+PHASE 1 — SETUP:
+1. /caido-mode health && /caido-mode auth-status
+2. /caido-mode create-scope with target domains
+3. /caido-mode create-env for each test account, store tokens/IDs
+
+PHASE 2 — DISCOVER (browser → Caido):
+1. Use browser tools to navigate and interact (all traffic captured by Caido)
+2. Screenshot after each navigation to see page state
+3. /caido-mode search to find API endpoints in captured traffic
+4. /caido-mode create-filter to save useful searches
+
+PHASE 3 — ATTACK (Caido edit/replay):
+1. /caido-mode get <id> to inspect interesting requests
+2. /caido-mode edit <id> to modify IDs, tokens, roles and replay
+3. /caido-mode create-session <id> and rename with descriptive name
+4. Compare original vs modified response to confirm vulnerability
+5. /caido-mode select-env to swap between account contexts for IDOR
+
+PHASE 4 — DOCUMENT:
+1. /caido-mode create-finding with title, description, dedupe-key, reporter
+2. /caido-mode create-collection to group related findings
+3. Write detailed PoC to report file with request-response pairs
+4. /caido-mode export-curl <id> to include reproducible curl commands
 
 LOCAL TOOLS (via Bash):
 - ffuf: Authenticated fuzzing with session cookies from Caido
@@ -373,11 +474,12 @@ REPORTING
 
 REPORT FILE: ${OUTPUT_FILE}
 
-- Use /caido-mode create-finding IMMEDIATELY after confirming each vulnerability
-- Write detailed findings to the report file with reproduction steps
-- Every vulnerability MUST have a working PoC and CVSS score
-- Document exact reproduction steps
-- Include both authorized and unauthorized request-response pairs
+For EVERY confirmed vulnerability, do ALL of these:
+1. /caido-mode create-finding <request-id> --title \"...\" --dedupe-key \"...\" --reporter \"caido-bb\"
+2. /caido-mode create-session <request-id> and rename to descriptive name
+3. /caido-mode export-curl <request-id> for the PoC curl command
+4. Write to report file: title, description, CVSS, reproduction steps, curl PoC
+5. Include BOTH authorized and unauthorized request-response pairs
 
 VULNERABILITY CHAINING:
 - Treat EVERY finding as a pivot point
