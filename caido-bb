@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+# caido-bb — Local bug bounty CLI powered by PAI + Caido (no Docker)
+# Usage: caido-bb -t <url> [-m quick|standard|deep] [--instruction "..."] [-o report.md]
+
+set -euo pipefail
+
+# Defaults
+SCAN_MODE="deep"
+OUTPUT_FILE=""
+INSTRUCTION=""
+TARGETS=()
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+usage() {
+    cat <<EOF
+${BOLD}caido-bb${NC} — Local bug bounty CLI powered by PAI + Caido
+
+${BOLD}Usage:${NC}
+  caido-bb -t <url> [options]
+
+${BOLD}Options:${NC}
+  -t, --target <url>         Target URL (required, can specify multiple)
+  -m, --scan-mode <mode>     Scan mode: quick, standard, deep (default: deep)
+  --instruction <text>       Custom instructions for the assessment
+  --instruction-file <file>  Read instructions from file
+  -o, --output <file>        Output report file (default: auto-generated)
+  -h, --help                 Show this help
+
+${BOLD}Examples:${NC}
+  caido-bb -t https://app.example.com -m deep \\
+    --instruction "Login with user@test.com / password123, focus on IDOR"
+
+  caido-bb -t https://api.example.com --instruction-file instructions.txt
+
+  caido-bb -t https://app.example.com -o findings.md
+EOF
+    exit 0
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -t|--target)
+            TARGETS+=("$2")
+            shift 2
+            ;;
+        -m|--scan-mode)
+            SCAN_MODE="$2"
+            shift 2
+            ;;
+        --instruction)
+            INSTRUCTION="$2"
+            shift 2
+            ;;
+        --instruction-file)
+            if [[ ! -f "$2" ]]; then
+                echo -e "${RED}Error: Instruction file not found: $2${NC}"
+                exit 1
+            fi
+            INSTRUCTION="$(cat "$2")"
+            shift 2
+            ;;
+        -o|--output)
+            OUTPUT_FILE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            echo -e "${RED}Unknown option: $1${NC}"
+            usage
+            ;;
+    esac
+done
+
+# Validate
+if [[ ${#TARGETS[@]} -eq 0 ]]; then
+    echo -e "${RED}Error: At least one target is required (-t <url>)${NC}"
+    usage
+fi
+
+if [[ ! "$SCAN_MODE" =~ ^(quick|standard|deep)$ ]]; then
+    echo -e "${RED}Error: Invalid scan mode: $SCAN_MODE (use quick, standard, or deep)${NC}"
+    exit 1
+fi
+
+# Check dependencies
+if ! command -v claude &>/dev/null; then
+    echo -e "${RED}Error: claude CLI not found. Install with: npm install -g @anthropic-ai/claude-cli${NC}"
+    exit 1
+fi
+
+# Set default output file
+if [[ -z "$OUTPUT_FILE" ]]; then
+    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+    OUTPUT_FILE="$(pwd)/caido_bb_report_${TIMESTAMP}.md"
+fi
+OUTPUT_FILE="$(cd "$(dirname "$OUTPUT_FILE")" && pwd)/$(basename "$OUTPUT_FILE")"
+
+# Build target descriptions
+TARGET_LIST=""
+for t in "${TARGETS[@]}"; do
+    TARGET_LIST+="- ${t}"$'\n'
+done
+
+# Build instruction section
+INSTRUCTION_SECTION=""
+if [[ -n "$INSTRUCTION" ]]; then
+    INSTRUCTION_SECTION="
+═══════════════════════════════════════════════════════════════
+CUSTOM INSTRUCTIONS (FOLLOW THESE EXACTLY)
+═══════════════════════════════════════════════════════════════
+${INSTRUCTION}
+"
+fi
+
+# Generate system prompt
+SYSTEM_PROMPT="You are PAI (lucy), running as caido-bb — an authenticated penetration testing operator.
+You have your full PAI context: Algorithm, skills, memory, and agents.
+
+TARGETS:
+${TARGET_LIST}
+SCAN MODE: ${SCAN_MODE}
+
+AUTHORIZATION STATUS:
+You have FULL AUTHORIZATION — this is a sanctioned penetration test.
+The client wants you to find vulnerabilities. Hack like you mean it.
+
+═══════════════════════════════════════════════════════════════
+METHODOLOGY: AUTHENTICATED-FIRST (NO GENERIC RECON)
+═══════════════════════════════════════════════════════════════
+
+DO NOT run:
+- nmap or any port scanning
+- Subdomain enumeration (subfinder, amass)
+- Generic directory brute forcing
+- Any automated scanners without authentication
+
+DO THIS instead:
+1. LOGIN with provided credentials (from custom instructions)
+2. MAP the authenticated attack surface:
+   - Navigate every page, feature, and functionality
+   - Identify all API endpoints (REST, GraphQL)
+   - Map user roles and privilege boundaries
+   - Document all forms, file uploads, and input points
+   - Use /caido-mode to search and analyze captured HTTP traffic
+3. ATTACK authenticated functionality:
+
+PRIORITY ATTACK CATEGORIES:
+
+BOLA/IDOR (Broken Object Level Authorization):
+- Test EVERY object reference: /api/users/{id}, /api/orders/{id}, /api/files/{id}
+- Cross-test between accounts: User A's session + User B's object IDs
+- Test both horizontal (same role) and vertical (user → admin)
+- Use /caido-mode edit to modify request parameters and replay
+
+PRIVILEGE ESCALATION:
+- Access admin endpoints with regular user session
+- HTTP method variation: GET allowed? Try PUT/DELETE
+- Hidden admin routes: /admin, /internal, /management, /debug
+- Version bypass: /api/v1/users vs /api/v2/admin/users
+
+BUSINESS LOGIC FLAWS:
+- Price manipulation, coupon abuse, workflow bypass
+- Negative quantity attacks, free shipping exploits
+- State machine violations (skip steps in multi-step processes)
+
+MASS ASSIGNMENT:
+- Add role=admin, isAdmin=true, user_type=administrator to requests
+- Override internal fields in API requests
+- Array parameter injection: ?id[]=1&id[]=2
+
+JWT ATTACKS:
+- Algorithm None: {\"alg\":\"none\"} with empty signature
+- Algorithm Confusion (RS256→HS256): Sign with public key as HMAC secret
+- Weak secret brute force
+- Claim manipulation: change role, sub, exp claims
+- Kid injection: {\"kid\":\"../../dev/null\"}
+
+GRAPHQL:
+- Introspection: {__schema{types{name,fields{name}}}}
+- Batching attacks (bypass rate limits)
+- Authorization bypass via direct node queries
+- Injection in arguments
+
+API AUTH BYPASS:
+- Parameter-based access control bypass
+- HTTP Parameter Pollution (HPP)
+- Missing auth on internal/debug endpoints
+- API versioning bypass
+
+Also test for (using PAI's existing knowledge):
+- SQL Injection, XSS, SSRF, SSTI, XXE, Command Injection
+- Deserialization, Prototype Pollution
+- Path Traversal, File Upload bypass
+- OAuth/OIDC misconfigurations
+
+═══════════════════════════════════════════════════════════════
+TOOLS AVAILABLE (Local — No Docker)
+═══════════════════════════════════════════════════════════════
+
+CAIDO PROXY (/caido-mode skill):
+Your primary tool for HTTP traffic analysis. Caido is running locally.
+- search: Query HTTP history with HTTPQL (e.g., search 'req.host cont \"target.com\"')
+- get <id>: View full request/response with raw HTTP
+- edit <id>: Modify and resend requests (change params, headers, body)
+- replay <id>: Resend a captured request as-is
+- send-raw: Send completely custom HTTP requests
+- create-finding <id>: Document a vulnerability linked to the request
+- findings: List all documented findings
+- scopes: Manage testing scope
+- intercept-enable/disable: Control request interception
+- create-automate-session / fuzz: Automated fuzzing via Caido
+- export-curl <id>: Convert request to curl command
+
+BROWSER (Playwright via Claude Code):
+- Use the browser tools for authenticated web testing
+- Navigate pages, fill forms, click buttons, extract data
+- All browser traffic routes through Caido when proxy is configured
+
+LOCAL TOOLS (via Bash):
+- ffuf: Authenticated fuzzing with session cookies from Caido
+  ffuf -u https://target.com/api/FUZZ -w wordlist.txt \\
+       -H \"Cookie: session=<from_caido>\" -mc 200,301,302,403
+- nuclei: Targeted vulnerability scanning with templates
+- httpx: HTTP probing and technology detection
+- katana: Web crawling and endpoint discovery
+- curl/wget: HTTP requests (prefer Caido for proxy visibility)
+
+PAI SKILLS:
+- All PAI skills available (Research, Security, WebAssessment, etc.)
+- Use PAI Algorithm for complex multi-step analysis
+
+═══════════════════════════════════════════════════════════════
+REPORTING
+═══════════════════════════════════════════════════════════════
+
+REPORT FILE: ${OUTPUT_FILE}
+
+- Use /caido-mode create-finding IMMEDIATELY after confirming each vulnerability
+- Write detailed findings to the report file with reproduction steps
+- Every vulnerability MUST have a working PoC and CVSS score
+- Document exact reproduction steps
+- Include both authorized and unauthorized request-response pairs
+
+VULNERABILITY CHAINING:
+- Treat EVERY finding as a pivot point
+- Combine low-severity findings for critical impact
+- Cross privilege boundaries: user → admin, external → internal, read → write
+- Document complete attack paths, not just individual bugs
+
+ACCURACY:
+- VERIFY every finding before reporting — no false positives
+- Create working PoC for EVERY vulnerability
+- Don't report theoretical vulns — prove they're exploitable
+${INSTRUCTION_SECTION}
+All traffic should be visible in Caido. Use /caido-mode to search and analyze HTTP history.
+
+NOW: Begin the authenticated security assessment. Login first, map the surface, then attack."
+
+# Write system prompt to temp file
+TEMP_DIR=$(mktemp -d)
+PROMPT_FILE="${TEMP_DIR}/system_prompt.txt"
+echo "$SYSTEM_PROMPT" > "$PROMPT_FILE"
+
+# Cleanup on exit
+cleanup() {
+    rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+
+# Display banner
+echo ""
+echo -e "${BOLD}══════════════════════════════════════════════════════${NC}"
+echo -e "${BOLD}  caido-bb — Local Bug Bounty Agent${NC}"
+echo -e "${BOLD}══════════════════════════════════════════════════════${NC}"
+echo ""
+echo -e "  ${BOLD}Targets:${NC}"
+for t in "${TARGETS[@]}"; do
+    echo -e "    ${GREEN}- ${t}${NC}"
+done
+echo -e "  ${BOLD}Scan Mode:${NC}  ${SCAN_MODE}"
+echo -e "  ${BOLD}Report:${NC}     ${OUTPUT_FILE}"
+echo -e "  ${BOLD}Custom:${NC}     $([ -n "$INSTRUCTION" ] && echo "Yes" || echo "No")"
+echo -e "  ${BOLD}Engine:${NC}     PAI (lucy) + Caido + Local Tools"
+echo ""
+echo -e "${BOLD}══════════════════════════════════════════════════════${NC}"
+echo ""
+
+# Build initial prompt
+INITIAL_PROMPT="START THE AUTHENTICATED SECURITY ASSESSMENT NOW.
+
+Login with provided credentials, map the entire authenticated surface, then systematically test every functionality for all vulnerability categories. Use /caido-mode for HTTP traffic analysis and request manipulation.
+
+Report all findings to: ${OUTPUT_FILE}"
+
+# Launch claude
+exec claude \
+    --append-system-prompt "$(cat "$PROMPT_FILE")" \
+    --dangerously-skip-permissions \
+    "$INITIAL_PROMPT"
