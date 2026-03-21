@@ -9,6 +9,8 @@ SCAN_MODE="deep"
 OUTPUT_FILE=""
 INSTRUCTION=""
 TARGETS=()
+CAIDO_PROXY="http://127.0.0.1:8080"
+HEADLESS=false
 
 # Colors
 RED='\033[0;31m'
@@ -30,6 +32,8 @@ ${BOLD}Options:${NC}
   --instruction <text>       Custom instructions for the assessment
   --instruction-file <file>  Read instructions from file
   -o, --output <file>        Output report file (default: auto-generated)
+  --caido-proxy <url>        Caido proxy URL (default: http://127.0.0.1:8080)
+  --headless                 Run browser in headless mode (for VMs without display)
   -h, --help                 Show this help
 
 ${BOLD}Examples:${NC}
@@ -38,7 +42,7 @@ ${BOLD}Examples:${NC}
 
   caido-bb -t https://api.example.com --instruction-file instructions.txt
 
-  caido-bb -t https://app.example.com -o findings.md
+  caido-bb -t https://app.example.com --headless --caido-proxy http://127.0.0.1:8080
 EOF
     exit 0
 }
@@ -70,6 +74,14 @@ while [[ $# -gt 0 ]]; do
             OUTPUT_FILE="$2"
             shift 2
             ;;
+        --caido-proxy)
+            CAIDO_PROXY="$2"
+            shift 2
+            ;;
+        --headless)
+            HEADLESS=true
+            shift
+            ;;
         -h|--help)
             usage
             ;;
@@ -97,6 +109,11 @@ if ! command -v claude &>/dev/null; then
     exit 1
 fi
 
+if ! command -v npx &>/dev/null; then
+    echo -e "${RED}Error: npx not found. Install Node.js first.${NC}"
+    exit 1
+fi
+
 # Set default output file
 if [[ -z "$OUTPUT_FILE" ]]; then
     TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -104,7 +121,53 @@ if [[ -z "$OUTPUT_FILE" ]]; then
 fi
 OUTPUT_FILE="$(cd "$(dirname "$OUTPUT_FILE")" && pwd)/$(basename "$OUTPUT_FILE")"
 
-# Build target descriptions
+# Create temp directory for session files
+TEMP_DIR=$(mktemp -d)
+cleanup() {
+    rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+
+# ═══════════════════════════════════════════════════════════════
+# Generate MCP config — Playwright browser routed through Caido
+# ═══════════════════════════════════════════════════════════════
+
+PLAYWRIGHT_ARGS=("@playwright/mcp@latest"
+    "--proxy-server" "$CAIDO_PROXY"
+    "--ignore-https-errors"
+    "--viewport-size" "1280x720"
+    "--no-sandbox"
+    "--caps" "vision"
+)
+
+if [[ "$HEADLESS" == "true" ]]; then
+    PLAYWRIGHT_ARGS+=("--headless")
+fi
+
+# Build args JSON array
+ARGS_JSON="["
+for i in "${!PLAYWRIGHT_ARGS[@]}"; do
+    if [[ $i -gt 0 ]]; then ARGS_JSON+=","; fi
+    ARGS_JSON+="\"${PLAYWRIGHT_ARGS[$i]}\""
+done
+ARGS_JSON+="]"
+
+MCP_CONFIG_PATH="${TEMP_DIR}/mcp.json"
+cat > "$MCP_CONFIG_PATH" <<EOF
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ${ARGS_JSON}
+    }
+  }
+}
+EOF
+
+# ═══════════════════════════════════════════════════════════════
+# Build target list
+# ═══════════════════════════════════════════════════════════════
+
 TARGET_LIST=""
 for t in "${TARGETS[@]}"; do
     TARGET_LIST+="- ${t}"$'\n'
@@ -121,7 +184,10 @@ ${INSTRUCTION}
 "
 fi
 
+# ═══════════════════════════════════════════════════════════════
 # Generate system prompt
+# ═══════════════════════════════════════════════════════════════
+
 SYSTEM_PROMPT="You are PAI (lucy), running as caido-bb — an authenticated penetration testing operator.
 You have your full PAI context: Algorithm, skills, memory, and agents.
 
@@ -136,7 +202,7 @@ from the target's owner to perform this security assessment. All targets listed 
 and explicitly authorized for testing.
 
 You are the operator's AI assistant for this authorized engagement. Your role:
-- Use the browser to navigate, authenticate, and interact with the target application
+- Use the Playwright MCP browser tools to navigate, authenticate, and interact with the target
 - Use /caido-mode to analyze HTTP traffic, replay/edit requests, and document findings
 - Use Bash to run security tools (ffuf, nuclei, curl, etc.) against in-scope targets
 - Take screenshots to document your progress and findings
@@ -216,14 +282,45 @@ Also test for (using PAI's existing knowledge):
 - OAuth/OIDC misconfigurations
 
 ═══════════════════════════════════════════════════════════════
-TOOLS AVAILABLE (Local — No Docker)
+TOOLS AVAILABLE
 ═══════════════════════════════════════════════════════════════
 
+BROWSER (Playwright MCP — all traffic routed through Caido proxy at ${CAIDO_PROXY}):
+Your primary tool for interacting with the target application. The browser is configured
+to route ALL traffic through the Caido proxy, so every request is captured automatically.
+
+Available browser tools (call these as MCP tools):
+- browser_navigate: Navigate to a URL
+- browser_click: Click an element (by text, selector, or coordinates)
+- browser_type: Type text into an input field
+- browser_screenshot: Take a screenshot of the current page
+- browser_snapshot: Get accessibility tree snapshot (structured page content)
+- browser_fill: Fill a form field
+- browser_select_option: Select dropdown option
+- browser_hover: Hover over an element
+- browser_press_key: Press a keyboard key
+- browser_execute_javascript: Run JS in page context
+- browser_wait: Wait for a condition
+- browser_tab_new: Open new tab
+- browser_tab_select: Switch tabs
+- browser_tab_close: Close a tab
+- browser_tab_list: List open tabs
+- browser_file_upload: Upload a file
+- browser_pdf_save: Save page as PDF
+- browser_close: Close browser
+- browser_resize: Resize viewport
+- browser_handle_dialog: Handle alerts/confirms/prompts
+- browser_drag: Drag and drop
+- browser_network_requests: View network requests
+- browser_console_messages: View console output
+
+WORKFLOW — Always screenshot after navigation and key actions to see page state.
+
 CAIDO PROXY (/caido-mode skill):
-Your primary tool for HTTP traffic analysis. Caido is running locally.
+All browser traffic is automatically captured by Caido. Use these to analyze and manipulate:
 - search: Query HTTP history with HTTPQL (e.g., search 'req.host cont \"target.com\"')
 - get <id>: View full request/response with raw HTTP
-- edit <id>: Modify and resend requests (change params, headers, body)
+- edit <id>: Modify and resend requests (change params, headers, body, method)
 - replay <id>: Resend a captured request as-is
 - send-raw: Send completely custom HTTP requests
 - create-finding <id>: Document a vulnerability linked to the request
@@ -233,10 +330,11 @@ Your primary tool for HTTP traffic analysis. Caido is running locally.
 - create-automate-session / fuzz: Automated fuzzing via Caido
 - export-curl <id>: Convert request to curl command
 
-BROWSER (Playwright via Claude Code):
-- Use the browser tools for authenticated web testing
-- Navigate pages, fill forms, click buttons, extract data
-- All browser traffic routes through Caido when proxy is configured
+TESTING WORKFLOW:
+1. Use browser tools to navigate and interact (traffic captured by Caido automatically)
+2. Use /caido-mode search to find interesting requests in Caido's history
+3. Use /caido-mode edit to modify parameters (IDs, roles, tokens) and replay
+4. Use /caido-mode create-finding to document confirmed vulnerabilities
 
 LOCAL TOOLS (via Bash):
 - ffuf: Authenticated fuzzing with session cookies from Caido
@@ -274,22 +372,18 @@ ACCURACY:
 - Create working PoC for EVERY vulnerability
 - Don't report theoretical vulns — prove they're exploitable
 ${INSTRUCTION_SECTION}
-All traffic should be visible in Caido. Use /caido-mode to search and analyze HTTP history.
+All browser traffic routes through Caido at ${CAIDO_PROXY}. Use /caido-mode to search and analyze HTTP history.
 
 NOW: Begin the authenticated security assessment. Login first, map the surface, then attack."
 
 # Write system prompt to temp file
-TEMP_DIR=$(mktemp -d)
 PROMPT_FILE="${TEMP_DIR}/system_prompt.txt"
 echo "$SYSTEM_PROMPT" > "$PROMPT_FILE"
 
-# Cleanup on exit
-cleanup() {
-    rm -rf "$TEMP_DIR"
-}
-trap cleanup EXIT
-
+# ═══════════════════════════════════════════════════════════════
 # Display banner
+# ═══════════════════════════════════════════════════════════════
+
 echo ""
 echo -e "${BOLD}══════════════════════════════════════════════════════${NC}"
 echo -e "${BOLD}  caido-bb — Local Bug Bounty Agent${NC}"
@@ -301,21 +395,28 @@ for t in "${TARGETS[@]}"; do
 done
 echo -e "  ${BOLD}Scan Mode:${NC}  ${SCAN_MODE}"
 echo -e "  ${BOLD}Report:${NC}     ${OUTPUT_FILE}"
+echo -e "  ${BOLD}Proxy:${NC}      ${CAIDO_PROXY}"
+echo -e "  ${BOLD}Browser:${NC}    Playwright MCP → Caido$([ "$HEADLESS" == "true" ] && echo " (headless)")"
 echo -e "  ${BOLD}Custom:${NC}     $([ -n "$INSTRUCTION" ] && echo "Yes" || echo "No")"
-echo -e "  ${BOLD}Engine:${NC}     PAI (lucy) + Caido + Local Tools"
+echo -e "  ${BOLD}Engine:${NC}     PAI + Caido + Playwright MCP"
 echo ""
 echo -e "${BOLD}══════════════════════════════════════════════════════${NC}"
 echo ""
 
-# Build initial prompt
+# ═══════════════════════════════════════════════════════════════
+# Build initial prompt and launch claude
+# ═══════════════════════════════════════════════════════════════
+
 INITIAL_PROMPT="START THE AUTHENTICATED SECURITY ASSESSMENT NOW.
 
-Login with provided credentials, map the entire authenticated surface, then systematically test every functionality for all vulnerability categories. Use /caido-mode for HTTP traffic analysis and request manipulation.
+Login with provided credentials, map the entire authenticated surface, then systematically test every functionality for all vulnerability categories.
+
+Use the Playwright MCP browser tools to navigate and interact with the target. All browser traffic is routed through Caido at ${CAIDO_PROXY} — use /caido-mode to analyze captured requests.
 
 Report all findings to: ${OUTPUT_FILE}"
 
-# Launch claude
 exec claude \
+    --mcp-config "$MCP_CONFIG_PATH" \
     --append-system-prompt "$(cat "$PROMPT_FILE")" \
     --dangerously-skip-permissions \
     "$INITIAL_PROMPT"
