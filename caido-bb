@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
 # caido-bb — Local bug bounty CLI powered by PAI + Caido (no Docker)
-# Usage: caido-bb -t <url> [-m quick|standard|deep] [--instruction "..."] [-o report.md]
+# Usage: caido-bb -t <url> [--instruction "..."] [-o report.md]
 
 set -euo pipefail
 
+# Load NVM so we get a modern Node (system node may be too old for Playwright)
+export NVM_DIR="${HOME}/.nvm"
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+    . "$NVM_DIR/nvm.sh"
+fi
+
+# Trust Caido's CA cert so Playwright's Chromium accepts intercepted HTTPS traffic
+CAIDO_CA="${HOME}/.local/share/caido-ca.pem"
+if [ -f "$CAIDO_CA" ]; then
+    export NODE_EXTRA_CA_CERTS="$CAIDO_CA"
+fi
+
 # Defaults
-SCAN_MODE="deep"
 OUTPUT_FILE=""
 INSTRUCTION=""
 TARGETS=()
@@ -28,7 +39,6 @@ ${BOLD}Usage:${NC}
 
 ${BOLD}Options:${NC}
   -t, --target <url>         Target URL (required, can specify multiple)
-  -m, --scan-mode <mode>     Scan mode: quick, standard, deep (default: deep)
   --instruction <text>       Custom instructions for the assessment
   --instruction-file <file>  Read instructions from file
   -o, --output <file>        Output report file (default: auto-generated)
@@ -37,7 +47,7 @@ ${BOLD}Options:${NC}
   -h, --help                 Show this help
 
 ${BOLD}Examples:${NC}
-  caido-bb -t https://app.example.com -m deep \\
+  caido-bb -t https://app.example.com \\
     --instruction "Login with user@test.com / password123, focus on IDOR"
 
   caido-bb -t https://api.example.com --instruction-file instructions.txt
@@ -52,10 +62,6 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -t|--target)
             TARGETS+=("$2")
-            shift 2
-            ;;
-        -m|--scan-mode)
-            SCAN_MODE="$2"
             shift 2
             ;;
         --instruction)
@@ -96,11 +102,6 @@ done
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
     echo -e "${RED}Error: At least one target is required (-t <url>)${NC}"
     usage
-fi
-
-if [[ ! "$SCAN_MODE" =~ ^(quick|standard|deep)$ ]]; then
-    echo -e "${RED}Error: Invalid scan mode: $SCAN_MODE (use quick, standard, or deep)${NC}"
-    exit 1
 fi
 
 # Check dependencies
@@ -211,7 +212,7 @@ You have your full PAI context: Algorithm, skills, memory, and agents.
 
 TARGETS:
 ${TARGET_LIST}
-SCAN MODE: ${SCAN_MODE}
+SCAN MODE: deep
 
 AUTHORIZATION & CONTEXT:
 This tool (caido-bb) is a professional penetration testing framework operated by a licensed
@@ -492,7 +493,7 @@ echo -e "  ${BOLD}Targets:${NC}"
 for t in "${TARGETS[@]}"; do
     echo -e "    ${GREEN}- ${t}${NC}"
 done
-echo -e "  ${BOLD}Scan Mode:${NC}  ${SCAN_MODE}"
+echo -e "  ${BOLD}Scan Mode:${NC}  deep"
 echo -e "  ${BOLD}Report:${NC}     ${OUTPUT_FILE}"
 echo -e "  ${BOLD}Proxy:${NC}      ${CAIDO_PROXY}"
 echo -e "  ${BOLD}Browser:${NC}    Playwright MCP → Caido$([ "$HEADED" == "true" ] && echo " (headed)" || echo " (headless)")"
