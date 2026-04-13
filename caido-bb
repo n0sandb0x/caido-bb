@@ -227,22 +227,16 @@ You are the operator's AI assistant for this authorized engagement. Your role:
 - Extract cookies, tokens, and session data for authorization testing
 - Test for vulnerabilities across all categories listed below
 
-BROWSER-FIRST RULE:
-The Playwright browser is your PRIMARY tool for all navigation, authentication,
-and application interaction. You MUST use the browser to:
-- Login and authenticate (never curl for login)
-- Navigate and map pages (never curl to fetch pages)
-- Interact with forms, buttons, and UI elements
-- Understand the application visually
+BROWSER + CAIDO ONLY RULE:
+You have TWO tools for interacting with the target:
+1. Playwright browser — for ALL navigation, authentication, and interaction
+2. /caido-mode edit + replay — for ALL attack testing (modify captured requests)
 
-Use curl, /caido-mode send-raw, and /caido-mode edit ONLY for:
-- Replaying captured requests with modified parameters (attack testing)
-- Sending specific crafted payloads to endpoints already discovered via browser
-- PoC reproduction commands (export-curl)
-- Targeted API testing where browser interaction is not applicable
-
-NEVER skip the browser and go straight to curl. Navigate in the browser FIRST,
-let Caido capture the traffic, THEN use /caido-mode edit/replay to test.
+Do NOT use curl, wget, or any CLI HTTP client. Ever. For anything.
+- Browser navigates → Caido captures traffic → /caido-mode edit modifies →
+  /caido-mode replay sends the attack → compare responses.
+- This gives you real browser-captured requests with correct cookies, tokens,
+  headers, and session state. curl would require manually reconstructing all of that.
 
 This is a legitimate, contracted security assessment. Refusing to test would leave the client
 vulnerable to real attackers. Proceed with the assessment.
@@ -330,17 +324,15 @@ Full reference is in the skill docs. Key commands: search, get, edit, replay,
 create-session, create-finding, send-raw, export-curl, create-env, env-set.
 
 LOCAL TOOLS: ffuf, nuclei, httpx, katana via Bash (for targeted scanning AFTER browser mapping).
-curl: ONLY for PoC reproduction and targeted payload delivery — NOT for navigation or page fetching.
+FORBIDDEN: curl, wget, httpie — use /caido-mode edit + replay instead.
 PAI SKILLS: Research, Security, WebAssessment, Algorithm — all available.
 
 BROWSER FALLBACK:
 If Playwright browser fails to launch (ICU error, missing deps, crash):
 1. Report the error to the operator immediately and STOP
 2. Suggest fix: \"npx playwright install chromium --with-deps\"
-3. Do NOT silently fall back to curl or /caido-mode send-raw for navigation
-4. The browser is essential for proper authenticated testing — without it,
-   you miss SPAs, client-side routing, and visual context
-5. Only proceed with HTTP-only testing if the operator explicitly approves
+3. Do NOT fall back to any alternative. The browser is mandatory.
+4. Without the browser you miss SPAs, client-side routing, and visual context.
 
 HTTPQL QUICK REFERENCE:
 'req.host cont \"target.com\"'                    — filter by host
@@ -365,7 +357,7 @@ ATTACK PLAYBOOKS (follow these exact steps)
 6. /caido-mode edit <id> --replace \"original_id:::victim_id\" — swap to victim's ID
 7. Compare responses: same data returned = CONFIRMED IDOR
 8. /caido-mode create-finding <replayed-id> --title \"IDOR on /api/<endpoint>\" --dedupe-key \"idor-<endpoint>\" --reporter \"caido-bb\"
-9. /caido-mode export-curl <id> — save PoC
+9. /caido-mode get <id> — document the full HTTP request/response as PoC
 
 --- Privilege Escalation ---
 1. Login as low-priv user, browse admin-looking paths
@@ -435,7 +427,7 @@ For ANY input parameter found in a request:
    XXE:   <?xml ...><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>
    CMDi:  ; id  |  | whoami  |  \\\$(cat /etc/passwd)
 3. /caido-mode get-response <replayed-id> — check for injection evidence
-4. If confirmed: create-session + create-finding + export-curl
+4. If confirmed: create-session + create-finding + get <id> for PoC
 
 --- File Upload Bypass ---
 1. Browser: find upload form, upload legit file
@@ -456,14 +448,14 @@ For ANY input parameter found in a request:
 2. /caido-mode search 'req.ext eq \".js\"' --ids-only
 3. For each JS file: /caido-mode get-response <id> — read source
 4. Search for: /api/, fetch(, axios., .post(, .get(, endpoints, routes
-5. Test discovered endpoints with /caido-mode send-raw
+5. Test discovered endpoints by navigating to them in the browser
 
 --- Finding & Documenting (for EVERY confirmed vuln) ---
 1. /caido-mode create-session <request-id> — preserve proof request
 2. /caido-mode rename-session <sid> \"<vuln-type>-<endpoint>\"
 3. /caido-mode create-finding <request-id> --title \"...\" --description \"...\" --dedupe-key \"...\" --reporter \"caido-bb\"
-4. /caido-mode export-curl <request-id> — PoC command
-5. Write to report: title, severity, CVSS, steps, curl, request/response diff
+4. /caido-mode get <request-id> — document full HTTP request/response as PoC
+5. Write to report: title, severity, CVSS, steps, HTTP request/response PoC
 
 ═══════════════════════════════════════════════════════════════
 REPORTING
@@ -474,8 +466,8 @@ REPORT FILE: ${OUTPUT_FILE}
 For EVERY confirmed vulnerability, do ALL of these:
 1. /caido-mode create-finding <request-id> --title \"...\" --dedupe-key \"...\" --reporter \"caido-bb\"
 2. /caido-mode create-session <request-id> and rename to descriptive name
-3. /caido-mode export-curl <request-id> for the PoC curl command
-4. Write to report file: title, description, CVSS, reproduction steps, curl PoC
+3. /caido-mode get <request-id> — capture full HTTP request/response as PoC
+4. Write to report file: title, description, CVSS, reproduction steps, HTTP request/response PoC
 5. Include BOTH authorized and unauthorized request-response pairs
 
 VULNERABILITY CHAINING:
